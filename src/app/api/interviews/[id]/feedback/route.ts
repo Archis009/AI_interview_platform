@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAuthUserId } from "@/lib/auth";
-
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const userId = await getAuthUserId();
@@ -18,7 +17,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     }
 
     // Format the transcript for the LLM
-    const transcriptText = transcript.map((msg: any) => `${msg.role.toUpperCase()}: ${msg.content}`).join("\n\n");
+    const transcriptText = transcript.map((msg: { role: string; content: string }) => `${msg.role.toUpperCase()}: ${msg.content}`).join("\n\n");
 
     if (!transcriptText.trim()) {
       await prisma.interview.update({
@@ -33,60 +32,44 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       return NextResponse.json({ success: true });
     }
 
-    console.log("[FEEDBACK] Calling Gemini API...");
+    let content = "{}";
+    try {
+      const sysMsgContent = `You are an expert technical recruiter reviewing a ${interview.type} interview transcript for a ${interview.jobRole} role. The candidate is a ${interview.user?.experienceLevel || "Mid-Level"} professional.
 
-    const models = ["gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-2.0-flash"];
-    let geminiRes = null;
-    let lastError = "";
+Analyze the following interview transcript and provide a detailed feedback report. Provide honest, constructive feedback.
 
-    for (const model of models) {
-      console.log(`[FEEDBACK] Trying model: ${model}`);
-      geminiRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  {
-                    text: `You are an expert technical recruiter reviewing a ${interview.type} interview transcript for a ${interview.jobRole} role. The candidate is a ${interview.user?.experienceLevel || "Mid-Level"} professional.
+IMPORTANT: Your response must be ONLY valid JSON matching this exact structure:
+{"score": 85, "strengths": ["strength 1", "strength 2", "strength 3"], "weaknesses": ["weakness 1", "weakness 2"], "detailedFeedback": "A comprehensive paragraph summarizing their performance, communication style, and specific advice for next time."}`;
 
-Analyze the following interview transcript and provide a detailed feedback report. 
+      const humanMsgContent = `Here is the interview transcript:\n\n${transcriptText}`;
 
-IMPORTANT: Your response must be ONLY valid JSON (no markdown, no code fences) matching this exact structure:
-{"score": 85, "strengths": ["strength 1", "strength 2", "strength 3"], "weaknesses": ["weakness 1", "weakness 2"], "detailedFeedback": "A comprehensive paragraph summarizing their performance, communication style, and specific advice for next time."}
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${process.env.GROQ_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: "llama-3.1-8b-instant",
+          response_format: { type: "json_object" },
+          temperature: 0.2,
+          messages: [
+            { role: "system", content: sysMsgContent },
+            { role: "user", content: humanMsgContent }
+          ]
+        })
+      });
 
-Here is the interview transcript:
-
-${transcriptText}`
-                  }
-                ]
-              }
-            ],
-            generationConfig: {
-              temperature: 0.2,
-              responseMimeType: "application/json"
-            }
-          })
-        }
-      );
-
-      if (geminiRes.ok) {
-        console.log(`[FEEDBACK] Success with model: ${model}`);
-        break;
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`HTTP ${res.status}: ${errText}`);
       }
 
-      lastError = await geminiRes.text();
-      console.warn(`[FEEDBACK] Model ${model} failed (${geminiRes.status}), trying next...`);
-      
-      // Wait 2 seconds before trying next model
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
-
-    if (!geminiRes || !geminiRes.ok) {
-      console.error("[FEEDBACK] All Gemini models failed. Last error:", lastError);
+      const data = await res.json();
+      content = data.choices[0].message.content;
+    } catch (e: unknown) {
+      const errorMessage = e instanceof Error ? e.message : "Unknown error occurred";
+      console.error("[FEEDBACK] OpenAI failed:", e);
       
       // Save the transcript anyway so it's not stuck in IN_PROGRESS
       await prisma.interview.update({
@@ -94,18 +77,15 @@ ${transcriptText}`
         data: {
           status: "COMPLETED",
           score: 0,
-          feedback: "### ⚠️ AI Quota Exhausted\n\nYour interview transcript was saved successfully, but we could not generate the AI feedback report because your Gemini API key has run out of its free tier quota for today.\n\nPlease check your billing details or try again tomorrow.",
+          feedback: `### ⚠️ API Error\n\nYour interview transcript was saved successfully, but we could not generate the AI feedback report due to an API error.\n\n**Error Details:**\n\`\`\`\n${errorMessage}\n\`\`\`\n\nPlease check your OpenAI API key or try again later.`,
           transcript: JSON.stringify(transcript),
         },
       });
 
-      return NextResponse.json({ success: true, warning: "Quota exhausted" });
+      return NextResponse.json({ success: true, warning: "API failed" });
     }
 
-    const geminiData = await geminiRes.json();
-    const content = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-
-    console.log("[FEEDBACK] Gemini response received, parsing...");
+    console.log("[FEEDBACK] OpenAI response received, parsing...");
 
     let feedbackData;
     try {
@@ -148,8 +128,9 @@ ${feedbackData.detailedFeedback || "No detailed feedback provided."}
 
     console.log("[FEEDBACK] Report saved successfully!");
     return NextResponse.json({ success: true });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : "Failed to generate report";
     console.error("Feedback Generation Error:", error);
-    return NextResponse.json({ error: error.message || "Failed to generate report" }, { status: 500 });
+    return NextResponse.json({ error: errorMsg }, { status: 500 });
   }
 }

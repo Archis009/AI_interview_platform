@@ -27,9 +27,12 @@ export const InterviewState = Annotation.Root({
 });
 
 const llm = new ChatOpenAI({
-  modelName: "gpt-4o-mini", // fast and cheap for this task
+  modelName: "llama-3.1-8b-instant",
   temperature: 0.7,
-  openAIApiKey: process.env.OPENAI_API_KEY,
+  openAIApiKey: process.env.GROQ_API_KEY,
+  configuration: {
+    baseURL: "https://api.groq.com/openai/v1"
+  }
 });
 
 // 2. Node: Evaluate the last answer
