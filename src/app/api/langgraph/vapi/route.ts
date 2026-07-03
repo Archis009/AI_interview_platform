@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { app } from "@/lib/langgraph";
-import { HumanMessage, AIMessage, SystemMessage } from "@langchain/core/messages";
+import { HumanMessage, AIMessage } from "@langchain/core/messages";
 import { prisma } from "@/lib/prisma";
 
 export async function POST(request: Request) {
@@ -19,10 +19,10 @@ export async function POST(request: Request) {
       if (interview) jobRole = interview.jobRole;
     }
 
-    // Convert OpenAI messages to LangChain messages
+    // Convert OpenAI messages to LangChain messages 
     const lcMessages = messages
-      .filter((m: any) => m.role === "user" || m.role === "assistant")
-      .map((m: any) => {
+      .filter((m: { role: string; content: string }) => m.role === "user" || m.role === "assistant")
+      .map((m: { role: string; content: string }) => {
         if (m.role === "user") return new HumanMessage(m.content);
         return new AIMessage(m.content);
       });
@@ -83,7 +83,7 @@ export async function POST(request: Request) {
       },
     });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Vapi Custom LLM Error:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
