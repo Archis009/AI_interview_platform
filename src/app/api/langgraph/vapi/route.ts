@@ -39,11 +39,10 @@ export async function POST(request: Request) {
     // but it also supports returning standard JSON for a single response chunk if streaming is disabled,
     // OR we can mock an SSE stream returning the complete text in one chunk.
     
-    // To mock SSE for Vapi:
     const stream = new ReadableStream({
       start(controller) {
         const chunk = {
-          id: "chatcmpl-mock",
+          id: "chatcmpl-mock", 
           object: "chat.completion.chunk",
           created: Date.now(),
           model: "gpt-4o-mini",
